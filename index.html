@@ -159,7 +159,7 @@
         .chat-user-item:hover { background: var(--bg-input); }
         .chat-box { display: flex; flex-direction: column; height: 100%; }
         .chat-messages { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-        .message-bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; }
+        .message-bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; word-break: break-word; }
         .message-bubble.sent { background: var(--primary); color: white; align-self: flex-end; }
         .message-bubble.received { background: var(--bg-input); color: var(--text-main); align-self: flex-start; }
         .chat-input-area { padding: 10px; border-top: 1px solid var(--border); display: flex; gap: 10px; }
@@ -327,7 +327,7 @@
                             <div id="chat-header" style="padding: 10px; border-bottom: 1px solid var(--border); font-weight: 700;">যেকোনো ফ্রেন্ড সিলেক্ট করুন</div>
                             <div class="chat-messages" id="chat-messages"></div>
                             <div class="chat-input-area">
-                                <input type="text" id="chat-message-input" class="form-control" placeholder="মেসেজ লিখুন...">
+                                <input type="text" id="chat-message-input" class="form-control" placeholder="মেসেজ লিখুন..." onkeypress="if(event.key==='Enter') sendChatMessage()">
                                 <button class="btn" style="width: auto;" onclick="sendChatMessage()">পাঠান</button>
                             </div>
                         </div>
@@ -442,7 +442,21 @@
         let activeChatUserId = null;
         let postsLimit = 10;
 
+        let feedUnsubscribe = null;
+        let chatUnsubscribe = null;
+        const activeCommentListeners = {};
+
         const userCache = {};
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
 
         async function getUserProfile(uid) {
             if (userCache[uid]) return userCache[uid];
@@ -486,7 +500,7 @@
             });
         }
 
-        // Optimized Auth Listener (Non-blocking)
+        // Auth Listener
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 currentUser = user;
@@ -518,8 +532,8 @@
             btn.disabled = true;
             btn.innerText = 'প্রসেসিং...';
 
-            const name = document.getElementById('reg-name').value;
-            const email = document.getElementById('reg-email').value;
+            const name = document.getElementById('reg-name').value.trim();
+            const email = document.getElementById('reg-email').value.trim();
             const password = document.getElementById('reg-password').value;
 
             try {
@@ -551,7 +565,7 @@
             const btn = document.getElementById('login-btn');
             btn.disabled = true;
 
-            const email = document.getElementById('login-email').value;
+            const email = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value;
 
             try {
@@ -567,7 +581,7 @@
         // Forgot Password
         document.getElementById('forgot-form').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const email = document.getElementById('forgot-email').value;
+            const email = document.getElementById('forgot-email').value.trim();
             try {
                 await sendPasswordResetEmail(auth, email);
                 showToast('পাসওয়ার্ড রিসেট লিংক ইমেইলে পাঠানো হয়েছে।', 'success');
@@ -585,7 +599,7 @@
             document.getElementById('prof-bio-display').innerText = currentUserProfile.bio || 'বায়ো যুক্ত করা হয়নি';
             document.getElementById('prof-avatar-display').src = currentUserProfile.avatarUrl || 'https://via.placeholder.com/150';
             document.getElementById('prof-cover-display').src = currentUserProfile.coverUrl || 'https://via.placeholder.com/800x250';
-            document.getElementById('edit-name-input').value = currentUserProfile.name;
+            document.getElementById('edit-name-input').value = currentUserProfile.name || '';
             document.getElementById('edit-bio-input').value = currentUserProfile.bio || '';
 
             onValue(ref(db, `friends/${currentUser.uid}`), snap => {
@@ -594,9 +608,11 @@
             });
         }
 
+        // File Upload with Unique Filename
         async function uploadFile(file, path, progressCallback) {
             return new Promise((resolve, reject) => {
-                const sRef = storageRef(storage, `${path}/${Date.now()}_${file.name}`);
+                const uniqueName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}_${file.name}`;
+                const sRef = storageRef(storage, `${path}/${uniqueName}`);
                 const uploadTask = uploadBytesResumable(sRef, file);
 
                 uploadTask.on('state_changed', 
@@ -613,6 +629,7 @@
             });
         }
 
+        // Post Creation Handler
         window.handleCreatePost = async function() {
             const text = document.getElementById('post-text-content').value.trim();
             const files = document.getElementById('post-image-file').files;
@@ -623,51 +640,74 @@
             }
 
             const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+            const validFiles = [];
+
             for(let file of files) {
-                if(!validTypes.includes(file.type) || file.size > 5 * 1024 * 1024) {
-                    showToast('ফাইল সঠিক নয় অথবা ৫MB-এর বেশি!', 'error');
-                    return;
+                if(validTypes.includes(file.type) && file.size <= 5 * 1024 * 1024) {
+                    validFiles.push(file);
+                } else {
+                    showToast(`${file.name} ফাইলটি বাতিল করা হয়েছে (সাইজ > 5MB অথবা টাইপ অমিল)`, 'error');
                 }
+            }
+
+            if (files.length > 0 && validFiles.length === 0) {
+                showToast('কোনো বৈধ ছবি পাওয়া যায়নি!', 'error');
+                return;
             }
 
             const btn = document.getElementById('create-post-btn');
             const progressContainer = document.getElementById('upload-progress-container');
             const progressFill = document.getElementById('upload-progress-fill');
+            
             btn.disabled = true;
+            btn.innerText = 'আপলোড হচ্ছে...';
 
             const imageUrls = [];
-            if(files.length > 0) {
-                progressContainer.classList.remove('hidden');
-                for(let i = 0; i < files.length; i++) {
-                    const url = await uploadFile(files[i], `posts/${currentUser.uid}`, (p) => {
-                        progressFill.style.width = `${p}%`;
-                    });
-                    imageUrls.push(url);
+
+            try {
+                if(validFiles.length > 0) {
+                    progressContainer.classList.remove('hidden');
+                    
+                    for(let i = 0; i < validFiles.length; i++) {
+                        const url = await uploadFile(validFiles[i], `posts/${currentUser.uid}`, (p) => {
+                            const totalProgress = Math.round(((i + (p / 100)) / validFiles.length) * 100);
+                            progressFill.style.width = `${totalProgress}%`;
+                        });
+                        imageUrls.push(url);
+                    }
                 }
+
+                const postRef = push(ref(db, 'posts'));
+                await set(postRef, {
+                    postId: postRef.key,
+                    uid: currentUser.uid,
+                    text: text,
+                    images: imageUrls,
+                    createdAt: Date.now()
+                });
+
+                document.getElementById('post-text-content').value = '';
+                document.getElementById('post-image-file').value = '';
+                closeModal('create-post-modal');
+                showToast('পোস্ট সফলভাবে প্রকাশিত হয়েছে!', 'success');
+
+            } catch (error) {
+                console.error("Upload error:", error);
+                showToast('ছবি আপলোড করতে ব্যর্থ হয়েছে! আবার চেষ্টা করুন।', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'পাবলিশ করুন';
+                progressContainer.classList.add('hidden');
+                progressFill.style.width = '0%';
             }
-
-            const postRef = push(ref(db, 'posts'));
-            await set(postRef, {
-                postId: postRef.key,
-                uid: currentUser.uid,
-                text: text,
-                images: imageUrls,
-                createdAt: Date.now()
-            });
-
-            btn.disabled = false;
-            progressContainer.classList.add('hidden');
-            progressFill.style.width = '0%';
-            document.getElementById('post-text-content').value = '';
-            document.getElementById('post-image-file').value = '';
-            closeModal('create-post-modal');
-            showToast('পোস্ট সফলভাবে প্রকাশিত হয়েছে!', 'success');
         };
 
-        // Instant & Non-blocking Feed Loading
+        // Feed Loading
         function loadFeedPosts() {
+            if (feedUnsubscribe) feedUnsubscribe();
+
             const postsRef = query(ref(db, 'posts'), limitToLast(postsLimit));
-            onValue(postsRef, (snap) => {
+            feedUnsubscribe = onValue(postsRef, (snap) => {
                 const container = document.getElementById('feed-container');
                 const userPostsContainer = document.getElementById('user-posts-container');
                 container.innerHTML = '';
@@ -685,20 +725,21 @@
                     if (post.uid === currentUser.uid) myPostsCount++;
 
                     const cachedAuthor = userCache[post.uid] || { name: 'ইউজার', avatarUrl: '' };
-                    const card = createPostCardElement(post, cachedAuthor);
+                    
+                    const card = createPostCardElement(post, cachedAuthor, 'feed');
                     container.appendChild(card);
 
                     if (post.uid === currentUser.uid) {
-                        userPostsContainer.appendChild(card.cloneNode(true));
+                        const profCard = createPostCardElement(post, cachedAuthor, 'profile');
+                        userPostsContainer.appendChild(profCard);
                     }
 
-                    // Async fetch user details without freezing UI
                     if (!userCache[post.uid]) {
                         getUserProfile(post.uid).then(author => {
-                            const nameEl = card.querySelector(`.author-name-${post.postId}`);
-                            const imgEl = card.querySelector(`.author-avatar-${post.postId}`);
-                            if(nameEl) nameEl.innerText = author.name;
-                            if(imgEl && author.avatarUrl) imgEl.src = author.avatarUrl;
+                            document.querySelectorAll(`.author-name-${post.postId}`).forEach(el => el.innerText = author.name);
+                            document.querySelectorAll(`.author-avatar-${post.postId}`).forEach(el => {
+                                if(author.avatarUrl) el.src = author.avatarUrl;
+                            });
                         });
                     }
                 });
@@ -713,29 +754,30 @@
             loadFeedPosts();
         };
 
-        function createPostCardElement(post, author) {
+        function createPostCardElement(post, author, scope = 'feed') {
             const card = document.createElement('div');
             card.className = 'post-card';
             
             const imagesHTML = post.images && post.images.length > 0 
-                ? `<div class="post-images-grid">${post.images.map(img => `<img src="${img}">`).join('')}</div>`
+                ? `<div class="post-images-grid">${post.images.map(img => `<img src="${escapeHtml(img)}">`).join('')}</div>`
                 : '';
 
             const reactions = post.reactions || {};
             const reactionsCount = Object.keys(reactions).length;
+            const prefix = scope === 'profile' ? 'prof-' : '';
 
             card.innerHTML = `
                 <div class="post-header">
                     <div class="user-meta">
                         <img src="${author.avatarUrl || 'https://via.placeholder.com/150'}" class="avatar author-avatar-${post.postId}">
                         <div>
-                            <div style="font-weight:700;" class="author-name-${post.postId}">${author.name}</div>
+                            <div style="font-weight:700;" class="author-name-${post.postId}">${escapeHtml(author.name)}</div>
                             <div style="font-size:11px; color:var(--text-muted);">${new Date(post.createdAt).toLocaleString('bn-BD')}</div>
                         </div>
                     </div>
                     ${post.uid === currentUser.uid ? `<button onclick="deletePost('${post.postId}')" style="background:none; border:none; color:var(--danger); cursor:pointer;"><i class="fa-solid fa-trash"></i></button>` : ''}
                 </div>
-                <div style="font-size:15px; line-height:1.5;">${post.text}</div>
+                <div style="font-size:15px; line-height:1.5;">${escapeHtml(post.text)}</div>
                 ${imagesHTML}
                 <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">${reactionsCount} জন রিয়্যাক্ট দিয়েছেন</div>
                 <div class="post-actions">
@@ -750,14 +792,14 @@
                             <span class="react-icon" onclick="reactPost('${post.postId}', '😡', '${post.uid}')">😡</span>
                         </div>
                     </button>
-                    <button class="action-btn" onclick="toggleComments('${post.postId}')"><i class="fa-regular fa-comment"></i> কমেন্ট</button>
+                    <button class="action-btn" onclick="toggleComments('${prefix}${post.postId}', '${post.postId}')"><i class="fa-regular fa-comment"></i> কমেন্ট</button>
                 </div>
-                <div id="comments-box-${post.postId}" class="comments-section hidden">
+                <div id="comments-box-${prefix}${post.postId}" class="comments-section hidden">
                     <div class="comment-box">
-                        <input type="text" id="comment-input-${post.postId}" class="form-control" placeholder="কমেন্ট লিখুন...">
-                        <button class="btn" style="width:auto;" onclick="addComment('${post.postId}', '${post.uid}')">পাঠান</button>
+                        <input type="text" id="comment-input-${prefix}${post.postId}" class="form-control" placeholder="কমেন্ট লিখুন..." onkeypress="if(event.key==='Enter') addComment('${prefix}${post.postId}', '${post.postId}', '${post.uid}')">
+                        <button class="btn" style="width:auto;" onclick="addComment('${prefix}${post.postId}', '${post.postId}', '${post.uid}')">পাঠান</button>
                     </div>
-                    <div id="comments-list-${post.postId}"></div>
+                    <div id="comments-list-${prefix}${post.postId}"></div>
                 </div>
             `;
             return card;
@@ -778,12 +820,17 @@
             }
         };
 
-        window.toggleComments = (postId) => {
-            const el = document.getElementById(`comments-box-${postId}`);
+        window.toggleComments = (elementPostId, postId) => {
+            const el = document.getElementById(`comments-box-${elementPostId}`);
+            if(!el) return;
+            
             el.classList.toggle('hidden');
             if (!el.classList.contains('hidden')) {
-                onValue(ref(db, `posts/${postId}/comments`), async snap => {
-                    const container = document.getElementById(`comments-list-${postId}`);
+                if (activeCommentListeners[elementPostId]) activeCommentListeners[elementPostId]();
+
+                activeCommentListeners[elementPostId] = onValue(ref(db, `posts/${postId}/comments`), async snap => {
+                    const container = document.getElementById(`comments-list-${elementPostId}`);
+                    if(!container) return;
                     container.innerHTML = '';
                     if (snap.exists()) {
                         const comments = Object.values(snap.val());
@@ -791,7 +838,7 @@
                             const cAuthor = await getUserProfile(c.uid);
                             container.innerHTML += `
                                 <div class="comment-item">
-                                    <strong>${cAuthor.name}:</strong> ${c.text}
+                                    <strong>${escapeHtml(cAuthor.name)}:</strong> ${escapeHtml(c.text)}
                                 </div>
                             `;
                         }
@@ -800,8 +847,9 @@
             }
         };
 
-        window.addComment = async (postId, postOwnerId) => {
-            const input = document.getElementById(`comment-input-${postId}`);
+        window.addComment = async (elementPostId, postId, postOwnerId) => {
+            const input = document.getElementById(`comment-input-${elementPostId}`);
+            if(!input) return;
             const text = input.value.trim();
             if (!text) return;
 
@@ -819,30 +867,42 @@
         };
 
         window.saveProfileChanges = async () => {
-            const name = document.getElementById('edit-name-input').value;
-            const bio = document.getElementById('edit-bio-input').value;
+            const name = document.getElementById('edit-name-input').value.trim();
+            const bio = document.getElementById('edit-bio-input').value.trim();
             const avatarFile = document.getElementById('edit-avatar-file').files[0];
             const coverFile = document.getElementById('edit-cover-file').files[0];
 
+            if (!name) {
+                showToast('নাম খালি রাখা যাবে না!', 'error');
+                return;
+            }
+
             const btn = document.getElementById('save-profile-btn');
             btn.disabled = true;
+            btn.innerText = 'সংরক্ষণ হচ্ছে...';
 
-            let avatarUrl = currentUserProfile ? currentUserProfile.avatarUrl || '' : '';
-            let coverUrl = currentUserProfile ? currentUserProfile.coverUrl || '' : '';
+            try {
+                let avatarUrl = currentUserProfile ? currentUserProfile.avatarUrl || '' : '';
+                let coverUrl = currentUserProfile ? currentUserProfile.coverUrl || '' : '';
 
-            if (avatarFile) avatarUrl = await uploadFile(avatarFile, `profiles/${currentUser.uid}`);
-            if (coverFile) coverUrl = await uploadFile(coverFile, `covers/${currentUser.uid}`);
+                if (avatarFile) avatarUrl = await uploadFile(avatarFile, `profiles/${currentUser.uid}`);
+                if (coverFile) coverUrl = await uploadFile(coverFile, `covers/${currentUser.uid}`);
 
-            const updatedData = { name, bio, avatarUrl, coverUrl };
-            await update(ref(db, `users/${currentUser.uid}`), updatedData);
-            
-            userCache[currentUser.uid] = { ...userCache[currentUser.uid], ...updatedData };
-            currentUserProfile = userCache[currentUser.uid];
+                const updatedData = { name, bio, avatarUrl, coverUrl };
+                await update(ref(db, `users/${currentUser.uid}`), updatedData);
+                
+                userCache[currentUser.uid] = { ...userCache[currentUser.uid], ...updatedData };
+                currentUserProfile = userCache[currentUser.uid];
 
-            btn.disabled = false;
-            closeModal('edit-profile-modal');
-            showToast('প্রোফাইল তথ্য আপডেট করা হয়েছে!', 'success');
-            initUserData();
+                closeModal('edit-profile-modal');
+                showToast('প্রোফাইল তথ্য আপডেট করা হয়েছে!', 'success');
+                initUserData();
+            } catch (err) {
+                showToast('প্রোফাইল আপডেট করতে সমস্যা হয়েছে!', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'সংরক্ষণ করুন';
+            }
         };
 
         window.handleSearchUsers = async () => {
@@ -857,10 +917,10 @@
                     userCache[u.uid] = u;
                     if(u.uid !== currentUser.uid && (u.name.toLowerCase().includes(queryText) || u.email.toLowerCase().includes(queryText))) {
                         container.innerHTML += `
-                            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); padding:10px; border-radius:8px; margin-bottom:8px; border:1px solid var(--border);">
+                            <div style="display:flex; align-items:center; justify-space-between; background:var(--bg-card); padding:10px; border-radius:8px; margin-bottom:8px; border:1px solid var(--border);">
                                 <div style="display:flex; align-items:center; gap:10px;">
                                     <img src="${u.avatarUrl || 'https://via.placeholder.com/150'}" class="avatar">
-                                    <div><strong>${u.name}</strong><br><small style="color:var(--text-muted);">${u.email}</small></div>
+                                    <div><strong>${escapeHtml(u.name)}</strong><br><small style="color:var(--text-muted);">${escapeHtml(u.email)}</small></div>
                                 </div>
                                 <button class="btn" style="width:auto; padding:5px 12px; font-size:12px;" onclick="sendFriendRequest('${u.uid}')">এড ফ্রেন্ড</button>
                             </div>
@@ -886,8 +946,8 @@
                     for (const uid of senderUids) {
                         const sender = await getUserProfile(uid);
                         container.innerHTML += `
-                            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); padding:10px; border-radius:8px; border:1px solid var(--border);">
-                                <div><strong>${sender.name}</strong></div>
+                            <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); padding:10px; border-radius:8px; border:1px solid var(--border); margin-bottom:8px;">
+                                <div><strong>${escapeHtml(sender.name)}</strong></div>
                                 <div style="display:flex; gap:5px;">
                                     <button class="btn" style="width:auto; padding:4px 8px; font-size:12px;" onclick="acceptFriendRequest('${sender.uid}')">এক্সেপ্ট</button>
                                     <button class="btn" style="width:auto; padding:4px 8px; font-size:12px; background:var(--danger);" onclick="rejectFriendRequest('${sender.uid}')">রিজেক্ট</button>
@@ -935,7 +995,7 @@
                         if(!n.read) unread++;
                         container.innerHTML += `
                             <div style="padding:10px; background:var(--bg-card); border-radius:8px; margin-bottom:8px; border:1px solid var(--border); font-size:13px;">
-                                ${n.text} <br><small style="color:var(--text-muted);">${new Date(n.createdAt).toLocaleString('bn-BD')}</small>
+                                ${escapeHtml(n.text)} <br><small style="color:var(--text-muted);">${new Date(n.createdAt).toLocaleString('bn-BD')}</small>
                             </div>
                         `;
                     });
@@ -949,6 +1009,19 @@
             });
         }
 
+        window.clearNotificationBadge = async () => {
+            const badge = document.getElementById('unread-count-badge');
+            badge.classList.add('hidden');
+            const snap = await get(ref(db, `notifications/${currentUser.uid}`));
+            if (snap.exists()) {
+                const updates = {};
+                Object.keys(snap.val()).forEach(key => {
+                    updates[`notifications/${currentUser.uid}/${key}/read`] = true;
+                });
+                await update(ref(db), updates);
+            }
+        };
+
         function loadActiveMembers() {
             onValue(ref(db, 'users'), snap => {
                 const container = document.getElementById('active-members-list');
@@ -960,11 +1033,11 @@
                     Object.values(snap.val()).forEach(u => {
                         userCache[u.uid] = u;
                         if(u.uid !== currentUser.uid) {
-                            container.innerHTML += `<div style="margin-bottom:6px;"><i class="fa-solid fa-circle" style="color:var(--success); font-size:8px;"></i> ${u.name}</div>`;
+                            container.innerHTML += `<div style="margin-bottom:6px;"><i class="fa-solid fa-circle" style="color:var(--success); font-size:8px;"></i> ${escapeHtml(u.name)}</div>`;
                             chatUsers.innerHTML += `
-                                <div class="chat-user-item" onclick="openChatWith('${u.uid}', '${u.name}')">
+                                <div class="chat-user-item" onclick="openChatWith('${u.uid}', '${escapeHtml(u.name)}')">
                                     <img src="${u.avatarUrl || 'https://via.placeholder.com/150'}" class="avatar" style="width:30px; height:30px;">
-                                    <span style="font-size:13px; font-weight:600;">${u.name}</span>
+                                    <span style="font-size:13px; font-weight:600;">${escapeHtml(u.name)}</span>
                                 </div>
                             `;
                         }
@@ -985,14 +1058,16 @@
 
         function loadChatMessages() {
             if(!activeChatUserId) return;
+            if(chatUnsubscribe) chatUnsubscribe();
+
             const roomId = getChatRoomId(currentUser.uid, activeChatUserId);
-            onValue(ref(db, `chats/${roomId}`), snap => {
+            chatUnsubscribe = onValue(ref(db, `chats/${roomId}`), snap => {
                 const container = document.getElementById('chat-messages');
                 container.innerHTML = '';
                 if(snap.exists()) {
                     Object.values(snap.val()).forEach(m => {
                         const isSent = m.senderUid === currentUser.uid;
-                        container.innerHTML += `<div class="message-bubble ${isSent ? 'sent' : 'received'}">${m.text}</div>`;
+                        container.innerHTML += `<div class="message-bubble ${isSent ? 'sent' : 'received'}">${escapeHtml(m.text)}</div>`;
                     });
                     container.scrollTop = container.scrollHeight;
                 }
@@ -1036,6 +1111,10 @@
             document.querySelectorAll('.nav-item-btn, .mobile-nav-item').forEach(el => el.classList.remove('active'));
             if(document.getElementById(`side-${tabName}`)) document.getElementById(`side-${tabName}`).classList.add('active');
             if(document.getElementById(`mob-${tabName}`)) document.getElementById(`mob-${tabName}`).classList.add('active');
+
+            if (tabName === 'notifications' && window.clearNotificationBadge) {
+                window.clearNotificationBadge();
+            }
         }
 
         function toggleTheme() {
